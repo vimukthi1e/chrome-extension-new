@@ -2,6 +2,20 @@ const TOP_HOME_URL = 'https://site-one.com';
 const BOTTOM_HOME_URL = 'https://site-two.com';
 const LOAD_TIMEOUT_MS = 12000;
 const MIN_PANEL_HEIGHT = 100;
+const TOP_STORAGE_KEY = 'savedTopUrl';
+const BOTTOM_STORAGE_KEY = 'savedBottomUrl';
+
+function getStoredUrl(key) {
+  return new Promise((resolve) => {
+    chrome.storage.local.get([key], (result) => {
+      resolve(result[key]);
+    });
+  });
+}
+
+function saveStoredUrl(key, url) {
+  chrome.storage.local.set({ [key]: url });
+}
 
 function createPanel(config) {
   const frame = document.getElementById(config.frameId);
@@ -102,6 +116,7 @@ function createPanel(config) {
     }
 
     pendingUrl = null;
+    saveStoredUrl(config.storageKey, currentUrl);
     updateButtons();
   });
 
@@ -137,7 +152,12 @@ function createPanel(config) {
   btnErrorTab.addEventListener('click', openInNewTab);
 
   updateButtons();
-  loadUrl(config.homeUrl, 'Opening home…');
+
+  getStoredUrl(config.storageKey)
+    .then((storedUrl) => storedUrl || config.homeUrl)
+    .then((initialUrl) => {
+      loadUrl(initialUrl, 'Opening home…');
+    });
 
   return {
     frame,
@@ -162,7 +182,8 @@ const topPanel = createPanel({
   tabId: 'tab-top',
   retryId: 'retry-top',
   errorHomeId: 'ehome-top',
-  errorTabId: 'etab-top'
+  errorTabId: 'etab-top',
+  storageKey: TOP_STORAGE_KEY
 });
 
 const bottomPanel = createPanel({
@@ -178,7 +199,8 @@ const bottomPanel = createPanel({
   tabId: 'tab-bottom',
   retryId: 'retry-bottom',
   errorHomeId: 'ehome-bottom',
-  errorTabId: 'etab-bottom'
+  errorTabId: 'etab-bottom',
+  storageKey: BOTTOM_STORAGE_KEY
 });
 
 const resizer = document.getElementById('resizer');
