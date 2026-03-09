@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Advanced Split Side Panel</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <section class="split-panel" id="panel-top" aria-label="Top embedded panel">
+      <header class="toolbar" role="toolbar" aria-label="Top panel navigation">
+        <button id="back-top" class="tool-btn" title="Back">←</button>
+        <button id="forward-top" class="tool-btn" title="Forward">→</button>
+        <button id="refresh-top" class="tool-btn" title="Refresh">↻</button>
+        <button id="home-top" class="tool-btn" title="Home">⌂</button>
+
+        <div class="url-pill" aria-live="polite">
+          <span id="url-top" class="url-display">Loading…</span>
+        </div>
+
+        <button id="tab-top" class="tool-btn tool-btn--accent" title="Open in New Tab">↗</button>
+      </header>
+
+      <div class="frame-wrap">
+        <section id="loader-top" class="overlay" aria-live="polite">
+          <div class="spinner" aria-hidden="true"></div>
+          <p>Loading…</p>
+        </section>
+
+        <section id="error-top" class="overlay hidden" role="alert">
+          <div class="error-card">
+            <h2>Unable to display this page</h2>
+            <p>This site may block embedding in frames.</p>
+            <button id="retry-top" class="action-btn">Retry</button>
+            <button id="ehome-top" class="action-btn">Go Home</button>
+            <button id="etab-top" class="action-btn action-btn--primary">Open in New Tab</button>
+          </div>
+        </section>
+
+        <iframe
+          id="frame-top"
+          title="Top embedded page"
+          referrerpolicy="no-referrer"
+          allow="fullscreen"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
+        ></iframe>
+      </div>
+    </section>
+
+    <div id="resizer" class="resizer" role="separator" aria-orientation="horizontal" aria-label="Resize panels">
+      <div class="resizer-handle"></div>
+    </div>
+
+    <section class="split-panel" id="panel-bottom" aria-label="Bottom embedded panel">
+      <header class="toolbar" role="toolbar" aria-label="Bottom panel navigation">
+        <button id="back-bottom" class="tool-btn" title="Back">←</button>
+        <button id="forward-bottom" class="tool-btn" title="Forward">→</button>
+        <button id="refresh-bottom" class="tool-btn" title="Refresh">↻</button>
+        <button id="home-bottom" class="tool-btn" title="Home">⌂</button>
+
+        <div class="url-pill" aria-live="polite">
+          <span id="url-bottom" class="url-display">Loading…</span>
+        </div>
+
+        <button id="tab-bottom" class="tool-btn tool-btn--accent" title="Open in New Tab">↗</button>
+      </header>
+
+      <div class="frame-wrap">
+        <section id="loader-bottom" class="overlay" aria-live="polite">
+          <div class="spinner" aria-hidden="true"></div>
+          <p>Loading…</p>
+        </section>
+
+        <section id="error-bottom" class="overlay hidden" role="alert">
+          <div class="error-card">
+            <h2>Unable to display this page</h2>
+            <p>This site may block embedding in frames.</p>
+            <button id="retry-bottom" class="action-btn">Retry</button>
+            <button id="ehome-bottom" class="action-btn">Go Home</button>
+            <button id="etab-bottom" class="action-btn action-btn--primary">Open in New Tab</button>
+          </div>
+        </section>
+
+        <iframe
+          id="frame-bottom"
+          title="Bottom embedded page"
+          referrerpolicy="no-referrer"
+          allow="fullscreen"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
+        ></iframe>
+      </div>
+    </section>
+
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Advanced Side Panel",
+  "version": "1.0.0",
+  "description": "Manifest V3 Chrome extension with an advanced navigation side panel.",
+  "permissions": [
+    "sidePanel",
+    "declarativeNetRequest",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_title": "Open Side Panel"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "ruleset_1",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  }
+}
