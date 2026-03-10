@@ -29,10 +29,28 @@ async function setupDynamicRules() {
 }
 
 async function verifyAndHealRules() {
-  const rules = await chrome.declarativeNetRequest.getDynamicRules();
-  if (rules.length === 0) {
-    console.warn('DNR rules missing, re-applying...');
-    await setupDynamicRules();
+  try {
+    const rules = await chrome.declarativeNetRequest.getDynamicRules();
+    const rule = rules.find((r) => r.id === 1);
+    const isValid =
+      rule &&
+      rule.action?.type === 'modifyHeaders' &&
+      Array.isArray(rule.action?.responseHeaders) &&
+      rule.action.responseHeaders.some((h) => h.header === 'x-frame-options' && h.operation === 'remove') &&
+      rule.condition?.resourceTypes?.includes('sub_frame') &&
+      Array.isArray(rule.condition?.initiatorDomains);
+
+    if (!isValid) {
+      console.warn('DNR rule missing or invalid, re-applying...');
+      await setupDynamicRules();
+    }
+  } catch (err) {
+    console.error('Rule verification failed:', err);
+    try {
+      await setupDynamicRules();
+    } catch (e) {
+      console.error('Rule re-apply also failed:', e);
+    }
   }
 }
 

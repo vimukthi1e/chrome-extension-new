@@ -123,11 +123,13 @@ function createPanel(config) {
     lastValidUrl: config.homeUrl,
     timeoutId: null,
     requestToken: 0,
-    _loadToken: 0,
     _fromHistory: false,
     history: [config.homeUrl],
     historyIndex: 0
   };
+
+  let _loadHandler = null;
+  let _errorHandler = null;
 
   function clearLoadTimeout() {
     if (state.timeoutId) {
@@ -189,24 +191,11 @@ function createPanel(config) {
     urlDisplay.textContent = value;
   }
 
-  function commitHistoryEntry(url) {
-    if (state._fromHistory) {
-      return;
-    }
-
-    if (state.history[state.historyIndex] === url) {
-      return;
-    }
-
-    state.history = state.history.slice(0, state.historyIndex + 1);
-    state.history.push(url);
-    state.historyIndex = state.history.length - 1;
-  }
 
   function navigate(url, options = {}) {
     const { fromHistory = false, loadingText = 'Loading…' } = options;
 
-    state._fromHistory = fromHistory;
+    state._fromHistory = options.fromHistory || false;
 
     const parsed = parseHttpUrl(url, state.currentUrl);
     if (!parsed.ok) {
@@ -219,15 +208,15 @@ function createPanel(config) {
     state.currentUrl = safeUrl;
     state.pendingUrl = safeUrl;
     state.requestToken += 1;
-    state._loadToken = state.requestToken;
-    const token = state.requestToken;
+    const capturedToken = state.requestToken;
 
     setDisplayUrl(safeUrl);
     hideError();
     setLoading(true, loadingText, 'If this takes too long, the site may block embedding.');
-    scheduleTimeout(token);
+    scheduleTimeout(capturedToken);
 
     updateButtons();
+    attachNavigationHandlers(capturedToken);
     frame.src = safeUrl;
   }
 
@@ -264,41 +253,65 @@ function createPanel(config) {
     });
   }
 
-  frame.addEventListener('load', () => {
-    const token = state._loadToken;
-    clearLoadTimeout();
-    if (token !== state.requestToken) {
-      return;
+
+  function attachNavigationHandlers(capturedToken) {
+    if (_loadHandler) {
+      frame.removeEventListener('load', _loadHandler);
     }
 
-    setLoading(false);
-    const loadedUrl = state.pendingUrl || frame.src || state.currentUrl;
-    state.pendingUrl = null;
-    const parsed = parseHttpUrl(loadedUrl, config.homeUrl);
-    if (!parsed.ok) {
-      showError(reasonMessage(parsed.reason));
-      return;
+    if (_errorHandler) {
+      frame.removeEventListener('error', _errorHandler);
     }
 
-    hideError();
-    state.currentUrl = parsed.url;
-    state.lastValidUrl = parsed.url;
-    setDisplayUrl(parsed.url);
-    persistUrl(parsed.url);
-    commitHistoryEntry(parsed.url);
-    updateButtons();
-  });
+    _loadHandler = () => {
+      if (capturedToken !== state.requestToken) {
+        return;
+      }
 
-  frame.addEventListener('error', () => {
-    if (state.requestToken !== state._loadToken) {
-      return;
-    }
+      clearLoadTimeout();
+      setLoading(false);
+      const loadedUrl = state.pendingUrl || frame.src || state.currentUrl;
+      state.pendingUrl = null;
+      const parsed = parseHttpUrl(loadedUrl, config.homeUrl);
+      if (!parsed.ok) {
+        showError(reasonMessage(parsed.reason));
+        state._fromHistory = false;
+        return;
+      }
 
-    showError({
-      title: 'Unable to display this page',
-      body: 'This page failed to load in the side panel.'
-    });
-  });
+      hideError();
+      state.currentUrl = parsed.url;
+      state.lastValidUrl = parsed.url;
+      setDisplayUrl(parsed.url);
+      persistUrl(parsed.url);
+      if (!state._fromHistory) {
+        if (state.history[state.historyIndex] !== parsed.url) {
+          state.history = state.history.slice(0, state.historyIndex + 1);
+          state.history.push(parsed.url);
+          state.historyIndex = state.history.length - 1;
+        }
+      }
+
+      state._fromHistory = false;
+      updateButtons();
+    };
+
+    _errorHandler = () => {
+      if (capturedToken !== state.requestToken) {
+        return;
+      }
+
+      state._fromHistory = false;
+      showError({
+        title: 'Unable to display this page',
+        body: 'This page failed to load in the side panel.'
+      });
+    };
+
+    frame.addEventListener('load', _loadHandler);
+    frame.addEventListener('error', _errorHandler);
+  }
+
 
   btnBack.addEventListener('click', goBack);
   btnForward.addEventListener('click', goForward);
@@ -445,6 +458,10 @@ document.addEventListener('mousemove', (event) => {
 
   const deltaY = event.clientY - startY;
   const totalHeight = document.body.clientHeight - resizer.offsetHeight;
+  if (totalHeight < 50) {
+    return;
+  }
+
   const nextTop = clamp(startTopHeight + deltaY, totalHeight * MIN_PANEL_RATIO, totalHeight * MAX_PANEL_RATIO);
   const ratio = nextTop / totalHeight;
   applySplitRatio(ratio);
@@ -484,8 +501,8 @@ resizer.addEventListener('keydown', (event) => {
 
 document.addEventListener('keydown', (event) => {
   const active = document.activeElement;
-  const inIframe = active && active.tagName === 'IFRAME';
-  if (inIframe) {
+  const inFrame = active?.tagName === 'IFRAME' || active?.closest?.('iframe') !== null || !document.hasFocus();
+  if (inFrame) {
     return;
   }
 
