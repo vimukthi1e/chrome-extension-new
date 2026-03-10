@@ -1,5 +1,3 @@
-chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: true })
-  .catch((error) => {
-    console.error('Failed to set side panel behavior:', error);
-  });
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => {
+  console.error('sidePanel behavior setup failed', error);
+});
