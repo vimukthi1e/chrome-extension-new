@@ -1,3 +1,5 @@
+chrome.runtime.sendMessage('panel-opened').catch(() => {});
+
 const TOP_HOME_URL = 'https://example.com/';
 const BOTTOM_HOME_URL = 'https://example.com/';
 const LOAD_TIMEOUT_MS = 12000;
@@ -7,7 +9,6 @@ const MAX_PANEL_RATIO = 0.7;
 const TOP_STORAGE_KEY = 'savedTopUrl';
 const BOTTOM_STORAGE_KEY = 'savedBottomUrl';
 const SPLIT_RATIO_KEY = 'splitRatio';
-
 
 function storageGet(keys) {
   return new Promise((resolve, reject) => {
@@ -68,7 +69,6 @@ function reasonMessage(reason) {
     };
   }
 
-
   return {
     title: 'Invalid URL',
     body: 'The URL is malformed or unsupported. Open it in a normal tab if needed.'
@@ -120,9 +120,11 @@ function createPanel(config) {
   const state = {
     currentUrl: config.homeUrl,
     pendingUrl: null,
-    lastSafeUrl: config.homeUrl,
+    lastValidUrl: config.homeUrl,
     timeoutId: null,
     requestToken: 0,
+    _loadToken: 0,
+    _fromHistory: false,
     history: [config.homeUrl],
     historyIndex: 0
   };
@@ -135,9 +137,8 @@ function createPanel(config) {
   }
 
   function updateButtons() {
-    const blocked = !error.classList.contains('hidden');
-    btnBack.disabled = blocked || state.historyIndex <= 0;
-    btnForward.disabled = blocked || state.historyIndex >= state.history.length - 1;
+    btnBack.disabled = state.historyIndex <= 0;
+    btnForward.disabled = state.historyIndex >= state.history.length - 1;
   }
 
   function setLoading(isLoading, title = 'Loading…', copy = 'Please wait…') {
@@ -160,7 +161,7 @@ function createPanel(config) {
     updateButtons();
   }
 
-  function persistUrlIfSafe(url) {
+  function persistUrl(url) {
     if (!url) {
       return;
     }
@@ -188,8 +189,24 @@ function createPanel(config) {
     urlDisplay.textContent = value;
   }
 
+  function commitHistoryEntry(url) {
+    if (state._fromHistory) {
+      return;
+    }
+
+    if (state.history[state.historyIndex] === url) {
+      return;
+    }
+
+    state.history = state.history.slice(0, state.historyIndex + 1);
+    state.history.push(url);
+    state.historyIndex = state.history.length - 1;
+  }
+
   function navigate(url, options = {}) {
     const { fromHistory = false, loadingText = 'Loading…' } = options;
+
+    state._fromHistory = fromHistory;
 
     const parsed = parseHttpUrl(url, state.currentUrl);
     if (!parsed.ok) {
@@ -202,18 +219,13 @@ function createPanel(config) {
     state.currentUrl = safeUrl;
     state.pendingUrl = safeUrl;
     state.requestToken += 1;
+    state._loadToken = state.requestToken;
     const token = state.requestToken;
 
     setDisplayUrl(safeUrl);
     hideError();
     setLoading(true, loadingText, 'If this takes too long, the site may block embedding.');
     scheduleTimeout(token);
-
-    if (!fromHistory) {
-      state.history = state.history.slice(0, state.historyIndex + 1);
-      state.history.push(safeUrl);
-      state.historyIndex = state.history.length - 1;
-    }
 
     updateButtons();
     frame.src = safeUrl;
@@ -238,19 +250,30 @@ function createPanel(config) {
   }
 
   function openInNewTab() {
-    const candidate = state.pendingUrl || state.currentUrl || state.lastSafeUrl || config.homeUrl;
+    const candidate = state.pendingUrl || state.currentUrl || state.lastValidUrl || config.homeUrl;
     const parsed = parseHttpUrl(candidate, config.homeUrl);
     const target = parsed.ok ? parsed.url : config.homeUrl;
-    chrome.tabs.create({ url: target });
+    chrome.tabs.create({ url: target }).catch(() => {
+      showError(
+        {
+          title: 'Could not open tab',
+          body: 'Browser blocked opening a new tab. Try manually.'
+        },
+        false
+      );
+    });
   }
 
   frame.addEventListener('load', () => {
+    const token = state._loadToken;
     clearLoadTimeout();
-    setLoading(false);
+    if (token !== state.requestToken) {
+      return;
+    }
 
+    setLoading(false);
     const loadedUrl = state.pendingUrl || frame.src || state.currentUrl;
     state.pendingUrl = null;
-
     const parsed = parseHttpUrl(loadedUrl, config.homeUrl);
     if (!parsed.ok) {
       showError(reasonMessage(parsed.reason));
@@ -259,16 +282,21 @@ function createPanel(config) {
 
     hideError();
     state.currentUrl = parsed.url;
-    state.lastSafeUrl = parsed.url;
+    state.lastValidUrl = parsed.url;
     setDisplayUrl(parsed.url);
-    persistUrlIfSafe(parsed.url);
+    persistUrl(parsed.url);
+    commitHistoryEntry(parsed.url);
     updateButtons();
   });
 
   frame.addEventListener('error', () => {
+    if (state.requestToken !== state._loadToken) {
+      return;
+    }
+
     showError({
       title: 'Unable to display this page',
-      body: 'This page failed to load in the side panel and may block framing.'
+      body: 'This page failed to load in the side panel.'
     });
   });
 
@@ -297,7 +325,7 @@ function createPanel(config) {
 
         state.history = [parsed.url];
         state.historyIndex = 0;
-        state.lastSafeUrl = parsed.url;
+        state.lastValidUrl = parsed.url;
         navigate(parsed.url, { loadingText: 'Restoring page…', fromHistory: true });
       } catch (errorValue) {
         console.warn('Panel restore failed, using home URL', errorValue);
@@ -390,6 +418,7 @@ async function restoreSplitRatio() {
     const restored = Number(result[SPLIT_RATIO_KEY]);
     if (!Number.isFinite(restored)) {
       applySplitRatio(0.5);
+      persistSplitRatio(0.5);
       return;
     }
 
@@ -453,21 +482,13 @@ resizer.addEventListener('keydown', (event) => {
   persistSplitRatio(safeRatio);
 });
 
-resizer.addEventListener('keydown', (event) => {
-  const step = 0.03;
-  const current = Number(resizer.getAttribute('aria-valuenow')) / 100 || 0.5;
-
-  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
+document.addEventListener('keydown', (event) => {
+  const active = document.activeElement;
+  const inIframe = active && active.tagName === 'IFRAME';
+  if (inIframe) {
     return;
   }
 
-  event.preventDefault();
-  const next = event.key === 'ArrowUp' ? current - step : current + step;
-  const safeRatio = applySplitRatio(next);
-  persistSplitRatio(safeRatio);
-});
-
-document.addEventListener('keydown', (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') {
     event.preventDefault();
     topPanel.refresh();
