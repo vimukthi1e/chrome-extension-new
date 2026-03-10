@@ -1,27 +1,88 @@
-const TOP_HOME_URL = 'https://site-one.com';
-const BOTTOM_HOME_URL = 'https://site-two.com';
+chrome.runtime.sendMessage('panel-opened').catch(() => {});
+
+const TOP_HOME_URL = 'https://example.com/';
+const BOTTOM_HOME_URL = 'https://example.com/';
 const LOAD_TIMEOUT_MS = 12000;
-const MIN_PANEL_HEIGHT = 100;
+const MIN_PANEL_RATIO = 0.3;
+const MAX_PANEL_RATIO = 0.7;
+
 const TOP_STORAGE_KEY = 'savedTopUrl';
 const BOTTOM_STORAGE_KEY = 'savedBottomUrl';
+const SPLIT_RATIO_KEY = 'splitRatio';
 
-function getStoredUrl(key) {
-  return new Promise((resolve) => {
-    chrome.storage.local.get([key], (result) => {
-      resolve(result[key]);
+function storageGet(keys) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.get(keys, (result) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(result);
     });
   });
 }
 
-function saveStoredUrl(key, url) {
-  chrome.storage.local.set({ [key]: url });
+function storageSet(value) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set(value, () => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function parseHttpUrl(rawValue, baseUrl = undefined) {
+  const raw = String(rawValue || '').trim();
+  if (!raw) {
+    return { ok: false, reason: 'empty' };
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(raw, baseUrl);
+  } catch {
+    return { ok: false, reason: 'invalid' };
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { ok: false, reason: 'unsupported-protocol', url: parsed.toString() };
+  }
+
+  return { ok: true, url: parsed.toString() };
+}
+
+function reasonMessage(reason) {
+  if (reason === 'empty') {
+    return {
+      title: 'No URL available',
+      body: 'This panel has no valid URL to load. Use Home or Open in Tab.'
+    };
+  }
+
+  if (reason === 'unsupported-protocol') {
+    return {
+      title: 'Unsupported protocol',
+      body: 'Only http and https URLs are allowed in this side panel.'
+    };
+  }
+
+  return {
+    title: 'Invalid URL',
+    body: 'The URL is malformed or unsupported. Open it in a normal tab if needed.'
+  };
 }
 
 function createPanel(config) {
   const frame = document.getElementById(config.frameId);
   const loader = document.getElementById(config.loaderId);
-  const loaderText = loader.querySelector('p');
+  const loaderText = loader.querySelector('.overlay-title');
+  const loaderCopy = loader.querySelector('.overlay-copy');
   const error = document.getElementById(config.errorId);
+  const errorTitle = document.getElementById(config.errorTitleId);
+  const errorCopy = document.getElementById(config.errorCopyId);
   const urlDisplay = document.getElementById(config.urlId);
 
   const btnBack = document.getElementById(config.backId);
@@ -33,28 +94,57 @@ function createPanel(config) {
   const btnErrorHome = document.getElementById(config.errorHomeId);
   const btnErrorTab = document.getElementById(config.errorTabId);
 
-  let currentUrl = config.homeUrl;
-  let pendingUrl = null;
-  let timeoutId = null;
+  const elements = [
+    frame,
+    loader,
+    loaderText,
+    loaderCopy,
+    error,
+    errorTitle,
+    errorCopy,
+    urlDisplay,
+    btnBack,
+    btnForward,
+    btnRefresh,
+    btnHome,
+    btnTab,
+    btnRetry,
+    btnErrorHome,
+    btnErrorTab
+  ];
+
+  if (elements.some((el) => !el)) {
+    throw new Error(`Panel configuration invalid for ${config.frameId}`);
+  }
+
+  const state = {
+    currentUrl: config.homeUrl,
+    pendingUrl: null,
+    lastValidUrl: config.homeUrl,
+    timeoutId: null,
+    requestToken: 0,
+    _loadToken: 0,
+    _fromHistory: false,
+    history: [config.homeUrl],
+    historyIndex: 0
+  };
 
   function clearLoadTimeout() {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-      timeoutId = null;
+    if (state.timeoutId) {
+      clearTimeout(state.timeoutId);
+      state.timeoutId = null;
     }
   }
 
-  function setLoading(isLoading, text = 'Loading…') {
-    loaderText.textContent = text;
-    loader.classList.toggle('hidden', !isLoading);
+  function updateButtons() {
+    btnBack.disabled = state.historyIndex <= 0;
+    btnForward.disabled = state.historyIndex >= state.history.length - 1;
   }
 
-  function showError(message = 'Unable to load this page.') {
-    clearLoadTimeout();
-    setLoading(false);
-    error.classList.remove('hidden');
-    urlDisplay.textContent = `${message} (${currentUrl})`;
-    updateButtons();
+  function setLoading(isLoading, title = 'Loading…', copy = 'Please wait…') {
+    loaderText.textContent = title;
+    loaderCopy.textContent = copy;
+    loader.classList.toggle('hidden', !isLoading);
   }
 
   function hideError() {
@@ -62,110 +152,190 @@ function createPanel(config) {
     updateButtons();
   }
 
-  function scheduleTimeout() {
+  function showError(message, openTabHint = true) {
     clearLoadTimeout();
-    timeoutId = setTimeout(() => {
-      showError('Load timed out after 12s');
+    setLoading(false);
+    errorTitle.textContent = message.title;
+    errorCopy.textContent = openTabHint ? `${message.body} Use Open in New Tab for full-page mode.` : message.body;
+    error.classList.remove('hidden');
+    updateButtons();
+  }
+
+  function persistUrl(url) {
+    if (!url) {
+      return;
+    }
+
+    storageSet({ [config.storageKey]: url }).catch((errorValue) => {
+      console.warn('Unable to store panel URL', errorValue);
+    });
+  }
+
+  function scheduleTimeout(requestToken) {
+    clearLoadTimeout();
+    state.timeoutId = setTimeout(() => {
+      if (requestToken !== state.requestToken) {
+        return;
+      }
+
+      showError({
+        title: 'Still loading or blocked',
+        body: 'This site may still be loading, or it may not allow embedding in a side panel.'
+      });
     }, LOAD_TIMEOUT_MS);
   }
 
-  function normalizeUrl(url) {
-    try {
-      return new URL(url).toString();
-    } catch {
-      return new URL(url, currentUrl).toString();
+  function setDisplayUrl(value) {
+    urlDisplay.textContent = value;
+  }
+
+  function commitHistoryEntry(url) {
+    if (state._fromHistory) {
+      return;
     }
+
+    if (state.history[state.historyIndex] === url) {
+      return;
+    }
+
+    state.history = state.history.slice(0, state.historyIndex + 1);
+    state.history.push(url);
+    state.historyIndex = state.history.length - 1;
   }
 
-  function updateButtons() {
-    const hasError = !error.classList.contains('hidden');
-    btnBack.disabled = hasError;
-    btnForward.disabled = hasError;
-  }
+  function navigate(url, options = {}) {
+    const { fromHistory = false, loadingText = 'Loading…' } = options;
 
-  function loadUrl(url, message = 'Loading…') {
-    const safeUrl = normalizeUrl(url);
-    currentUrl = safeUrl;
-    pendingUrl = safeUrl;
-    urlDisplay.textContent = safeUrl;
+    state._fromHistory = fromHistory;
 
+    const parsed = parseHttpUrl(url, state.currentUrl);
+    if (!parsed.ok) {
+      showError(reasonMessage(parsed.reason));
+      setDisplayUrl(String(url || 'Invalid URL'));
+      return;
+    }
+
+    const safeUrl = parsed.url;
+    state.currentUrl = safeUrl;
+    state.pendingUrl = safeUrl;
+    state.requestToken += 1;
+    state._loadToken = state.requestToken;
+    const token = state.requestToken;
+
+    setDisplayUrl(safeUrl);
     hideError();
-    setLoading(true, message);
-    scheduleTimeout();
+    setLoading(true, loadingText, 'If this takes too long, the site may block embedding.');
+    scheduleTimeout(token);
+
+    updateButtons();
     frame.src = safeUrl;
   }
 
+  function goBack() {
+    if (state.historyIndex <= 0) {
+      return;
+    }
+
+    state.historyIndex -= 1;
+    navigate(state.history[state.historyIndex], { fromHistory: true, loadingText: 'Navigating back…' });
+  }
+
+  function goForward() {
+    if (state.historyIndex >= state.history.length - 1) {
+      return;
+    }
+
+    state.historyIndex += 1;
+    navigate(state.history[state.historyIndex], { fromHistory: true, loadingText: 'Navigating forward…' });
+  }
+
   function openInNewTab() {
-    chrome.tabs.create({ url: currentUrl });
+    const candidate = state.pendingUrl || state.currentUrl || state.lastValidUrl || config.homeUrl;
+    const parsed = parseHttpUrl(candidate, config.homeUrl);
+    const target = parsed.ok ? parsed.url : config.homeUrl;
+    chrome.tabs.create({ url: target }).catch(() => {
+      showError(
+        {
+          title: 'Could not open tab',
+          body: 'Browser blocked opening a new tab. Try manually.'
+        },
+        false
+      );
+    });
   }
 
   frame.addEventListener('load', () => {
+    const token = state._loadToken;
     clearLoadTimeout();
-    setLoading(false);
-
-    try {
-      const loaded = frame.contentWindow.location.href;
-      if (loaded) {
-        currentUrl = loaded;
-        urlDisplay.textContent = loaded;
-      }
-    } catch {
-      if (pendingUrl) {
-        urlDisplay.textContent = pendingUrl;
-      }
+    if (token !== state.requestToken) {
+      return;
     }
 
-    pendingUrl = null;
-    saveStoredUrl(config.storageKey, currentUrl);
+    setLoading(false);
+    const loadedUrl = state.pendingUrl || frame.src || state.currentUrl;
+    state.pendingUrl = null;
+    const parsed = parseHttpUrl(loadedUrl, config.homeUrl);
+    if (!parsed.ok) {
+      showError(reasonMessage(parsed.reason));
+      return;
+    }
+
+    hideError();
+    state.currentUrl = parsed.url;
+    state.lastValidUrl = parsed.url;
+    setDisplayUrl(parsed.url);
+    persistUrl(parsed.url);
+    commitHistoryEntry(parsed.url);
     updateButtons();
   });
 
   frame.addEventListener('error', () => {
-    showError('Page failed to load');
-  });
-
-  btnBack.addEventListener('click', () => {
-    try {
-      setLoading(true, 'Navigating back…');
-      scheduleTimeout();
-      frame.contentWindow.history.back();
-    } catch {
-      showError('Cannot navigate back for this page');
+    if (state.requestToken !== state._loadToken) {
+      return;
     }
+
+    showError({
+      title: 'Unable to display this page',
+      body: 'This page failed to load in the side panel.'
+    });
   });
 
-  btnForward.addEventListener('click', () => {
-    try {
-      setLoading(true, 'Navigating forward…');
-      scheduleTimeout();
-      frame.contentWindow.history.forward();
-    } catch {
-      showError('Cannot navigate forward for this page');
-    }
-  });
-
-  btnRefresh.addEventListener('click', () => loadUrl(currentUrl, 'Refreshing…'));
-  btnHome.addEventListener('click', () => loadUrl(config.homeUrl, 'Opening home…'));
+  btnBack.addEventListener('click', goBack);
+  btnForward.addEventListener('click', goForward);
+  btnRefresh.addEventListener('click', () => navigate(state.currentUrl, { loadingText: 'Refreshing…', fromHistory: true }));
+  btnHome.addEventListener('click', () => navigate(config.homeUrl, { loadingText: 'Opening home…' }));
   btnTab.addEventListener('click', openInNewTab);
-  btnRetry.addEventListener('click', () => loadUrl(currentUrl, 'Retrying…'));
-  btnErrorHome.addEventListener('click', () => loadUrl(config.homeUrl, 'Opening home…'));
+  btnRetry.addEventListener('click', () => navigate(state.currentUrl, { loadingText: 'Retrying…', fromHistory: true }));
+  btnErrorHome.addEventListener('click', () => navigate(config.homeUrl, { loadingText: 'Opening home…' }));
   btnErrorTab.addEventListener('click', openInNewTab);
 
   updateButtons();
 
-  getStoredUrl(config.storageKey)
-    .then((storedUrl) => storedUrl || config.homeUrl)
-    .then((initialUrl) => {
-      loadUrl(initialUrl, 'Opening home…');
-    });
-
   return {
-    frame,
-    loadUrl,
-    goBack: () => btnBack.click(),
-    goForward: () => btnForward.click(),
-    refresh: () => btnRefresh.click(),
-    goHome: () => btnHome.click()
+    init: async () => {
+      try {
+        const result = await storageGet([config.storageKey]);
+        const restored = result[config.storageKey];
+        const parsed = parseHttpUrl(restored || config.homeUrl, config.homeUrl);
+
+        if (!parsed.ok) {
+          navigate(config.homeUrl, { loadingText: 'Opening home…' });
+          return;
+        }
+
+        state.history = [parsed.url];
+        state.historyIndex = 0;
+        state.lastValidUrl = parsed.url;
+        navigate(parsed.url, { loadingText: 'Restoring page…', fromHistory: true });
+      } catch (errorValue) {
+        console.warn('Panel restore failed, using home URL', errorValue);
+        navigate(config.homeUrl, { loadingText: 'Opening home…' });
+      }
+    },
+    goBack,
+    goForward,
+    refresh: () => navigate(state.currentUrl, { loadingText: 'Refreshing…', fromHistory: true }),
+    goHome: () => navigate(config.homeUrl, { loadingText: 'Opening home…' })
   };
 }
 
@@ -174,6 +344,8 @@ const topPanel = createPanel({
   frameId: 'frame-top',
   loaderId: 'loader-top',
   errorId: 'error-top',
+  errorTitleId: 'error-title-top',
+  errorCopyId: 'error-copy-top',
   urlId: 'url-top',
   backId: 'back-top',
   forwardId: 'forward-top',
@@ -191,6 +363,8 @@ const bottomPanel = createPanel({
   frameId: 'frame-bottom',
   loaderId: 'loader-bottom',
   errorId: 'error-bottom',
+  errorTitleId: 'error-title-bottom',
+  errorCopyId: 'error-copy-bottom',
   urlId: 'url-bottom',
   backId: 'back-bottom',
   forwardId: 'forward-bottom',
@@ -210,7 +384,11 @@ const allFrames = document.querySelectorAll('iframe');
 
 let dragging = false;
 let startY = 0;
-let startHeightTop = 0;
+let startTopHeight = 0;
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
 
 function setFramePointerEvents(disabled) {
   allFrames.forEach((iframe) => {
@@ -218,11 +396,43 @@ function setFramePointerEvents(disabled) {
   });
 }
 
+function applySplitRatio(ratio) {
+  const safeRatio = clamp(ratio, MIN_PANEL_RATIO, MAX_PANEL_RATIO);
+  panelTop.style.flex = `${safeRatio} 1 0`;
+  panelBottom.style.flex = `${1 - safeRatio} 1 0`;
+  resizer.setAttribute('aria-valuenow', String(Math.round(safeRatio * 100)));
+  return safeRatio;
+}
+
+async function persistSplitRatio(ratio) {
+  try {
+    await storageSet({ [SPLIT_RATIO_KEY]: ratio });
+  } catch (errorValue) {
+    console.warn('Unable to store split ratio', errorValue);
+  }
+}
+
+async function restoreSplitRatio() {
+  try {
+    const result = await storageGet([SPLIT_RATIO_KEY]);
+    const restored = Number(result[SPLIT_RATIO_KEY]);
+    if (!Number.isFinite(restored)) {
+      applySplitRatio(0.5);
+      persistSplitRatio(0.5);
+      return;
+    }
+
+    applySplitRatio(restored);
+  } catch (errorValue) {
+    console.warn('Unable to restore split ratio', errorValue);
+    applySplitRatio(0.5);
+  }
+}
+
 resizer.addEventListener('mousedown', (event) => {
   dragging = true;
   startY = event.clientY;
-  startHeightTop = panelTop.getBoundingClientRect().height;
-
+  startTopHeight = panelTop.getBoundingClientRect().height;
   resizer.classList.add('dragging');
   document.body.classList.add('is-dragging');
   setFramePointerEvents(true);
@@ -235,12 +445,9 @@ document.addEventListener('mousemove', (event) => {
 
   const deltaY = event.clientY - startY;
   const totalHeight = document.body.clientHeight - resizer.offsetHeight;
-  const maxTopHeight = totalHeight - MIN_PANEL_HEIGHT;
-  const nextTop = Math.min(maxTopHeight, Math.max(MIN_PANEL_HEIGHT, startHeightTop + deltaY));
-
-  panelTop.style.flex = 'none';
-  panelTop.style.height = `${nextTop}px`;
-  panelBottom.style.flex = '1';
+  const nextTop = clamp(startTopHeight + deltaY, totalHeight * MIN_PANEL_RATIO, totalHeight * MAX_PANEL_RATIO);
+  const ratio = nextTop / totalHeight;
+  applySplitRatio(ratio);
 });
 
 function stopDragging() {
@@ -252,12 +459,36 @@ function stopDragging() {
   resizer.classList.remove('dragging');
   document.body.classList.remove('is-dragging');
   setFramePointerEvents(false);
+
+  const total = panelTop.getBoundingClientRect().height + panelBottom.getBoundingClientRect().height;
+  const ratio = total > 0 ? panelTop.getBoundingClientRect().height / total : 0.5;
+  persistSplitRatio(clamp(ratio, MIN_PANEL_RATIO, MAX_PANEL_RATIO));
 }
 
 document.addEventListener('mouseup', stopDragging);
-document.addEventListener('mouseleave', stopDragging);
+window.addEventListener('blur', stopDragging);
+
+resizer.addEventListener('keydown', (event) => {
+  const step = 0.03;
+  const current = Number(resizer.getAttribute('aria-valuenow')) / 100 || 0.5;
+
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
+    return;
+  }
+
+  event.preventDefault();
+  const next = event.key === 'ArrowUp' ? current - step : current + step;
+  const safeRatio = applySplitRatio(next);
+  persistSplitRatio(safeRatio);
+});
 
 document.addEventListener('keydown', (event) => {
+  const active = document.activeElement;
+  const inIframe = active && active.tagName === 'IFRAME';
+  if (inIframe) {
+    return;
+  }
+
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') {
     event.preventDefault();
     topPanel.refresh();
@@ -304,3 +535,7 @@ document.addEventListener('keydown', (event) => {
     topPanel.goHome();
   }
 });
+
+restoreSplitRatio();
+topPanel.init();
+bottomPanel.init();
