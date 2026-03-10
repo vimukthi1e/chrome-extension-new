@@ -453,6 +453,20 @@ resizer.addEventListener('keydown', (event) => {
   persistSplitRatio(safeRatio);
 });
 
+resizer.addEventListener('keydown', (event) => {
+  const step = 0.03;
+  const current = Number(resizer.getAttribute('aria-valuenow')) / 100 || 0.5;
+
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
+    return;
+  }
+
+  event.preventDefault();
+  const next = event.key === 'ArrowUp' ? current - step : current + step;
+  const safeRatio = applySplitRatio(next);
+  persistSplitRatio(safeRatio);
+});
+
 document.addEventListener('keydown', (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') {
     event.preventDefault();
