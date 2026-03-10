@@ -1,4 +1,4 @@
-chrome.runtime.sendMessage('panel-opened').catch(() => {});
+const panelOpenHandshake = chrome.runtime.sendMessage('panel-opened').catch(() => null);
 
 const TOP_HOME_URL = 'https://example.com/';
 const BOTTOM_HOME_URL = 'https://example.com/';
@@ -180,6 +180,7 @@ function createPanel(config) {
         return;
       }
 
+      state._fromHistory = false;
       showError({
         title: 'Still loading or blocked',
         body: 'This site may still be loading, or it may not allow embedding in a side panel.'
@@ -199,6 +200,7 @@ function createPanel(config) {
 
     const parsed = parseHttpUrl(url, state.currentUrl);
     if (!parsed.ok) {
+      state._fromHistory = false;
       showError(reasonMessage(parsed.reason));
       setDisplayUrl(String(url || 'Invalid URL'));
       return;
@@ -553,6 +555,11 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-restoreSplitRatio();
-topPanel.init();
-bottomPanel.init();
+async function bootstrapPanels() {
+  await panelOpenHandshake;
+  restoreSplitRatio();
+  topPanel.init();
+  bottomPanel.init();
+}
+
+bootstrapPanels();

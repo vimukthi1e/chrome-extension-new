@@ -29,16 +29,27 @@ async function setupDynamicRules() {
 }
 
 async function verifyAndHealRules() {
+  const expectedHeaders = [
+    ['x-frame-options', 'remove'],
+    ['content-security-policy', 'remove'],
+    ['permissions-policy', 'remove']
+  ];
+  const extensionId = chrome.runtime.id;
+
   try {
     const rules = await chrome.declarativeNetRequest.getDynamicRules();
     const rule = rules.find((r) => r.id === 1);
+    const headers = Array.isArray(rule?.action?.responseHeaders) ? rule.action.responseHeaders : [];
+    const hasExpectedHeaders = expectedHeaders.every(([header, operation]) =>
+      headers.some((h) => h.header === header && h.operation === operation)
+    );
+
     const isValid =
-      rule &&
-      rule.action?.type === 'modifyHeaders' &&
-      Array.isArray(rule.action?.responseHeaders) &&
-      rule.action.responseHeaders.some((h) => h.header === 'x-frame-options' && h.operation === 'remove') &&
-      rule.condition?.resourceTypes?.includes('sub_frame') &&
-      Array.isArray(rule.condition?.initiatorDomains);
+      rule?.action?.type === 'modifyHeaders' &&
+      hasExpectedHeaders &&
+      rule?.condition?.resourceTypes?.includes('sub_frame') &&
+      Array.isArray(rule?.condition?.initiatorDomains) &&
+      rule.condition.initiatorDomains.includes(extensionId);
 
     if (!isValid) {
       console.warn('DNR rule missing or invalid, re-applying...');
@@ -57,12 +68,19 @@ async function verifyAndHealRules() {
 chrome.runtime.onInstalled.addListener(setupDynamicRules);
 chrome.runtime.onStartup.addListener(setupDynamicRules);
 
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg === 'panel-opened') {
-    verifyAndHealRules().catch((error) => {
-      console.error('Failed to verify/heal dynamic rules:', error);
-    });
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg !== 'panel-opened') {
+    return undefined;
   }
+
+  verifyAndHealRules()
+    .then(() => sendResponse({ ok: true }))
+    .catch((error) => {
+      console.error('Failed to verify/heal dynamic rules:', error);
+      sendResponse({ ok: false });
+    });
+
+  return true;
 });
 
 chrome.sidePanel
