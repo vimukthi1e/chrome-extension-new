@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Advanced Side Panel",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Safe split side panel that shows two websites when framing is allowed.",
   "minimum_chrome_version": "114",
   "permissions": [
     "sidePanel",
-    "storage"
+    "storage",
+    "tabs",
+    "declarativeNetRequest"
   ],
   "action": {
     "default_title": "Open Side Panel"

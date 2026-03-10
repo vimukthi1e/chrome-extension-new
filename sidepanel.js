@@ -1,5 +1,5 @@
 const TOP_HOME_URL = 'https://example.com/';
-const BOTTOM_HOME_URL = 'https://www.wikipedia.org/';
+const BOTTOM_HOME_URL = 'https://example.com/';
 const LOAD_TIMEOUT_MS = 12000;
 const MIN_PANEL_RATIO = 0.3;
 const MAX_PANEL_RATIO = 0.7;
@@ -8,8 +8,6 @@ const TOP_STORAGE_KEY = 'savedTopUrl';
 const BOTTOM_STORAGE_KEY = 'savedBottomUrl';
 const SPLIT_RATIO_KEY = 'splitRatio';
 
-const SENSITIVE_PATTERN =
-  /(payment|billing|checkout|card|wallet|bank|banking|login|signin|auth|oauth|sso|verify|secure|account|3ds|password|reset|mfa|otp)/i;
 
 function storageGet(keys) {
   return new Promise((resolve, reject) => {
@@ -55,16 +53,6 @@ function parseHttpUrl(rawValue, baseUrl = undefined) {
   return { ok: true, url: parsed.toString() };
 }
 
-function isSensitiveUrl(url) {
-  try {
-    const parsed = new URL(url);
-    const haystack = `${parsed.hostname}${parsed.pathname}${parsed.search}`;
-    return SENSITIVE_PATTERN.test(haystack);
-  } catch {
-    return true;
-  }
-}
-
 function reasonMessage(reason) {
   if (reason === 'empty') {
     return {
@@ -80,12 +68,6 @@ function reasonMessage(reason) {
     };
   }
 
-  if (reason === 'sensitive') {
-    return {
-      title: 'Protected page',
-      body: 'Sensitive pages (payment/login/banking/account flows) are blocked in this iframe. Open in a normal tab.'
-    };
-  }
 
   return {
     title: 'Invalid URL',
@@ -179,7 +161,7 @@ function createPanel(config) {
   }
 
   function persistUrlIfSafe(url) {
-    if (!url || isSensitiveUrl(url)) {
+    if (!url) {
       return;
     }
 
@@ -217,14 +199,6 @@ function createPanel(config) {
     }
 
     const safeUrl = parsed.url;
-    if (isSensitiveUrl(safeUrl)) {
-      state.pendingUrl = safeUrl;
-      state.currentUrl = safeUrl;
-      setDisplayUrl(safeUrl);
-      showError(reasonMessage('sensitive'));
-      return;
-    }
-
     state.currentUrl = safeUrl;
     state.pendingUrl = safeUrl;
     state.requestToken += 1;
@@ -267,7 +241,7 @@ function createPanel(config) {
     const candidate = state.pendingUrl || state.currentUrl || state.lastSafeUrl || config.homeUrl;
     const parsed = parseHttpUrl(candidate, config.homeUrl);
     const target = parsed.ok ? parsed.url : config.homeUrl;
-    window.open(target, '_blank', 'noopener,noreferrer');
+    chrome.tabs.create({ url: target });
   }
 
   frame.addEventListener('load', () => {
@@ -280,12 +254,6 @@ function createPanel(config) {
     const parsed = parseHttpUrl(loadedUrl, config.homeUrl);
     if (!parsed.ok) {
       showError(reasonMessage(parsed.reason));
-      return;
-    }
-
-    if (isSensitiveUrl(parsed.url)) {
-      showError(reasonMessage('sensitive'));
-      setDisplayUrl(parsed.url);
       return;
     }
 
@@ -322,7 +290,7 @@ function createPanel(config) {
         const restored = result[config.storageKey];
         const parsed = parseHttpUrl(restored || config.homeUrl, config.homeUrl);
 
-        if (!parsed.ok || isSensitiveUrl(parsed.url)) {
+        if (!parsed.ok) {
           navigate(config.homeUrl, { loadingText: 'Opening home…' });
           return;
         }
@@ -469,7 +437,21 @@ function stopDragging() {
 }
 
 document.addEventListener('mouseup', stopDragging);
-document.addEventListener('mouseleave', stopDragging);
+window.addEventListener('blur', stopDragging);
+
+resizer.addEventListener('keydown', (event) => {
+  const step = 0.03;
+  const current = Number(resizer.getAttribute('aria-valuenow')) / 100 || 0.5;
+
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
+    return;
+  }
+
+  event.preventDefault();
+  const next = event.key === 'ArrowUp' ? current - step : current + step;
+  const safeRatio = applySplitRatio(next);
+  persistSplitRatio(safeRatio);
+});
 
 resizer.addEventListener('keydown', (event) => {
   const step = 0.03;
